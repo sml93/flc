@@ -1,5 +1,20 @@
 import numpy as np
 
+from ceilingEffect import thrustCE
+
+""" 
+Steps for fuzzy logic controller:
+Step 1: Identification of variables
+Step 2: Fuzzy subset config
+Step 3: Obtaining Membership Functions (MF)
+Step 4: Fuzzy Rule Base Configuration
+Step 5: Normalizing and scaling factors
+Step 6: Fuzzification
+Step 7: Identification of output (op)
+Step 8: Defuzzification
+"""
+
+
 class flc():
     def __init__(self, cdist, vuav):
         ## Defining fuzzy input variables
@@ -20,15 +35,18 @@ class flc():
         self.PSSD = 0
         self.PLSD = 0
 
-        ## Initialise variables for rules
+        ## Initialise all throttle/thrust setpoint linguistic variables
         self.NLTC = 0
         self.NSTC = 0
         self.ZTC = 0
         self.PSTC = 0
         self.PLTC = 0
 
-        ## Defining fuzzy output variables
+        ## Defining default fuzzy output variables (thrust setpoint)
         self._throttle = 0.38
+
+        ## Initialising thrust value from ceiling effect
+        self.thrustCE = 0.0
 
     """ Functions for calculating open left-right fuzzification for Membership Functions (MF) """
     def openLeft(self, curr_value, alpha, beta):
@@ -246,7 +264,13 @@ class flc():
             crispOp = np.round(numerator,5)/np.round(denominator,5)
             return (crispOp)
 
+
     def update(self):
+        """ Update thrustCE """
+        runCE = thrustCE(self._ceiling_dist)
+        self.thrustCE = runCE.getThrust()
+        print("Thrust from CE (N): ", self.thrustCE)
+
         """ Update all fuzzy values for all inputs of the fuzzy sets """
         self.NLCD, self.NSCD, self.ZCD, self.PSCD, self.PLCD = self.partitionCD(self._ceiling_dist)
         self.NLSD, self.NSSD, self.ZSD, self.PSSD, self.PLSD = self.partitionSD(self._vel_uav)

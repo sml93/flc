@@ -3,7 +3,7 @@ import numpy as np
 class thrustCE:
   def __init__(self, cdist):
     self._ceilingDist = cdist
-    self._inputFlowVel = 3
+    self._inputFlowVel = 1.0  ## to run thrust stand CE experiment and update, probably a curvefit model 
     self._radius = 10/39.37  ## inches to m
     self._alpha0 = 1.6
     self._alpha1 = 0

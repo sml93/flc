@@ -1,25 +1,22 @@
+import time
+import rospy
 import numpy as np
 
-from ceilingEffect import thrustCE
+## importing rosmsg functions
+from nav_msgs.msg import Odometry
+from sensor_msgs.msg import LaserScan
 
-""" 
-Steps for fuzzy logic controller:
-Step 1: Identification of variables
-Step 2: Fuzzy subset config
-Step 3: Obtaining Membership Functions (MF)
-Step 4: Fuzzy Rule Base Configuration
-Step 5: Normalizing and scaling factors
-Step 6: Fuzzification
-Step 7: Identification of output (op)
-Step 8: Defuzzification
-"""
+## importing helper functions
+from ceilingEffect import thrustCE
+from thrustMapper import getThrustSP
+from matplotlib import pyplot as plt
 
 
 class flc():
-    def __init__(self, cdist, vuav):
+    def __init__(self):
         ## Defining fuzzy input variables
-        self._ceiling_dist = cdist
-        self._vel_uav = vuav
+        self._ceiling_dist = 2.4
+        self._vel_uav = 0
 
         ## Initialise all ceiling distance linguistic variables
         self.NLCD = 0
@@ -47,6 +44,31 @@ class flc():
 
         ## Initialising thrust value from ceiling effect
         self.thrustCE = 0.0
+
+        ## Initialising UAV z pose
+        self.zuav = 0.0
+
+        self.init_pubsubs()
+        self.update()
+
+    def init_pubsubs(self):
+      self.ranger_sub = rospy.Subscriber('/lw20_ranger', LaserScan, self.ranger_callback)
+      self.odom_sub = rospy.Subscriber('/mavros/local_position/odom', Odometry, self.odom_callback)
+
+    def ranger_callback(self, msg):
+      range = msg.ranges[0]
+      if np.isinf(range):
+        # print("range in inf")
+        range = 0
+        self._ceiling_dist = 2.4 - range
+      else:
+        self._ceiling_dist = 2.4 - range
+    #   print("ok: ", self._ceiling_dist)
+
+    def odom_callback(self, msg):
+      self._vel_uav = msg.twist.twist.linear.z
+      self.zuav = msg.pose.pose.position.z
+      # print(self._vel_uav)
 
     """ Functions for calculating open left-right fuzzification for Membership Functions (MF) """
     def openLeft(self, curr_value, alpha, beta):
@@ -235,29 +257,29 @@ class flc():
           UAV thrust cannot be more than x value at any point, might damage prismatic joints
         """
         if self.NLTC != 0:
-            areaNL, cNL = self.areaOL(self.NLTC, 0.25, 0.35)
+            areaNL, cNL = self.areaOL(self.NLTC, 0.365, 0.375)
         
         if self.NSTC != 0:
-            areaNS = self.areaTR(self.NSTC, 0.3, 0.35, 0.4)
-            cNS = 0.35
+            areaNS = self.areaTR(self.NSTC, 0.37, 0.375, 0.38)
+            cNS = 0.375
         
         if self.ZTC != 0:
-            areaZ = self.areaTR(self.ZTC, 0.35, 0.4, 0.45)
-            cZ = 0.4
+            areaZ = self.areaTR(self.ZTC, 0.375, 0.38, 0.385)
+            cZ = 0.38
         
         if self.PSTC != 0:
-            areaPS = self.areaTR(self.PSTC, 0.4, 0.45, 0.5)
-            cPS = 0.45
+            areaPS = self.areaTR(self.PSTC, 0.38, 0.385, 0.385)
+            cPS = 0.385
         
         if self.PLTC != 0:
-            areaPL, cPL = self.areaOR(self.PLTC, 0.45, 0.55)
+            areaPL, cPL = self.areaOR(self.PLTC, 0.385, 0.395)
 
         numerator = (areaNL*cNL) + (areaNS*cNS) + (areaZ*cZ) + (areaPS*cPS) + (areaPL*cPL)
         # print("num: ", numerator)
         denominator = areaNL + areaNS + areaZ + areaPS + areaPL
         # print("denom: ", denominator)
         if denominator == 0:
-            print("No rules exist to give the results")
+            # print("No rules exist to give the results")
             print("Default thrust setpoint at: ", self._throttle)
             return (self._throttle)
         else:
@@ -267,32 +289,60 @@ class flc():
 
     def update(self):
         """ Update thrustCE """
+        self.init_pubsubs()
+        # if self._ceiling_dist < 1.0:
         runCE = thrustCE(self._ceiling_dist)
-        self.thrustCE = runCE.getThrust()  ## Need to map thrust to thrust setpoint
+        self.thrustCE = runCE.getThrust()/9.81  ## Need to map thrust to thrust setpoint
         print("Thrust from CE (N): ", self.thrustCE)
+
 
         """ Update all fuzzy values for all inputs of the fuzzy sets """
         self.NLCD, self.NSCD, self.ZCD, self.PSCD, self.PLCD = self.partitionCD(self._ceiling_dist)
         self.NLSD, self.NSSD, self.ZSD, self.PSSD, self.PLSD = self.partitionSD(self._vel_uav)
         OP = [[self.NLCD, self.NSCD, self.ZCD, self.PSCD, self.PLCD],
               [self.NLSD, self.NSSD, self.ZSD, self.PSSD, self.PLSD]]
-        print("The fuzzy values of the crisp inputs are: ", np.round(OP, 4))
+        print("The fuzzy values of the crisp inputs are: \n", np.round(OP, 4))
 
         self.rules()
         OpRules = [[self.NLTC, self.NSTC, self.ZTC, self.PSTC, self.PLTC]]
-        print("Output Rules: ", np.round(OpRules, 4))
+        # print("Output Rules: ", np.round(OpRules, 4))
 
         crispOpFinal = self.defuzzification()
         print("\n The crisp TC value is: ", crispOpFinal)
 
+        if crispOpFinal != self._throttle:
+            print("Compensating for CE")
+            thrustSP = getThrustSP(crispOpFinal, self.thrustCE)
+            return thrustSP
+        else:
+            return self._throttle
+
 
 def main():
-    dist = float(input("What is the distance? "))
-    spd = float(input("What is the speed of the UAV? "))
-    print("\n dist: ", dist)
-    print("\n speed: ", spd)
-    run = flc(dist, spd)
-    run.update()
+    my_list = []
+    time_list = []
+    poseZ = []
+    velZ = []
+    ce_list = []
+    rospy.init_node("flc", anonymous=True)
+    run = flc()
+    time_start = time.time()
+    while not rospy.is_shutdown():
+      my_list.append(run.update())
+      time_list.append(time.time()-time_start)
+      poseZ.append(run.zuav)
+      velZ.append(run._vel_uav)
+    #   ce_list.append(run.thrustCE*9.81)
+
+    plt.figure()
+    plt.plot(time_list, my_list, label="thrustSP")
+    plt.plot(time_list, poseZ, label="poseZ")
+    plt.plot(time_list, velZ, label="velZ")
+    # plt.plot(time_list, ce_list, label='thrust_ce')
+    plt.legend()
+    plt.show()
+    # return my_list, time_list   
+
 
 
 if __name__ == "__main__":

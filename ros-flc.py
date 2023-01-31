@@ -1,25 +1,21 @@
+import time
+import rospy
 import numpy as np
 
-from ceilingEffect import thrustCE
+## importing rosmsg functions
+from nav_msgs.msg import Odometry
+from sensor_msgs.msg import LaserScan
 
-""" 
-Steps for fuzzy logic controller:
-Step 1: Identification of variables
-Step 2: Fuzzy subset config
-Step 3: Obtaining Membership Functions (MF)
-Step 4: Fuzzy Rule Base Configuration
-Step 5: Normalizing and scaling factors
-Step 6: Fuzzification
-Step 7: Identification of output (op)
-Step 8: Defuzzification
-"""
+## importing helper functions
+from ceilingEffect import thrustCE
+from matplotlib import pyplot as plt
 
 
 class flc():
-    def __init__(self, cdist, vuav):
+    def __init__(self):
         ## Defining fuzzy input variables
-        self._ceiling_dist = cdist
-        self._vel_uav = vuav
+        self._ceiling_dist = 2.4
+        self._vel_uav = 0
 
         ## Initialise all ceiling distance linguistic variables
         self.NLCD = 0
@@ -47,6 +43,26 @@ class flc():
 
         ## Initialising thrust value from ceiling effect
         self.thrustCE = 0.0
+
+        ## Initialising UAV z pose
+        self.zuav = 0.0
+
+        self.init_pubsubs()
+        self.update()
+
+    def init_pubsubs(self):
+      self.ranger_sub = rospy.Subscriber('/lw20_ranger', LaserScan, self.ranger_callback)
+      self.odom_sub = rospy.Subscriber('/mavros/local_position/odom', Odometry, self.odom_callback)
+
+    def ranger_callback(self, msg):
+      range = msg.ranges[0]
+      self._ceiling_dist = 2.4 - range
+      # print(self._ceiling_dist)
+
+    def odom_callback(self, msg):
+      self._vel_uav = msg.twist.twist.linear.z
+      self.zuav = msg.pose.pose.position.z
+      # print(self._vel_uav)
 
     """ Functions for calculating open left-right fuzzification for Membership Functions (MF) """
     def openLeft(self, curr_value, alpha, beta):
@@ -257,7 +273,7 @@ class flc():
         denominator = areaNL + areaNS + areaZ + areaPS + areaPL
         # print("denom: ", denominator)
         if denominator == 0:
-            print("No rules exist to give the results")
+            # print("No rules exist to give the results")
             print("Default thrust setpoint at: ", self._throttle)
             return (self._throttle)
         else:
@@ -267,6 +283,7 @@ class flc():
 
     def update(self):
         """ Update thrustCE """
+        self.init_pubsubs()
         runCE = thrustCE(self._ceiling_dist)
         self.thrustCE = runCE.getThrust()  ## Need to map thrust to thrust setpoint
         print("Thrust from CE (N): ", self.thrustCE)
@@ -284,15 +301,32 @@ class flc():
 
         crispOpFinal = self.defuzzification()
         print("\n The crisp TC value is: ", crispOpFinal)
+        return crispOpFinal
 
 
 def main():
-    dist = float(input("What is the distance? "))
-    spd = float(input("What is the speed of the UAV? "))
-    print("\n dist: ", dist)
-    print("\n speed: ", spd)
-    run = flc(dist, spd)
-    run.update()
+    # dist = float(input("What is the distance? "))
+    # spd = float(input("What is the speed of the UAV? "))
+    # print("\n dist: ", dist)
+    # print("\n speed: ", spd)
+    my_list = []
+    time_list = []
+    poseZ = []
+    rospy.init_node("flc", anonymous=True)
+    run = flc()
+    time_start = time.time()
+    while not rospy.is_shutdown():
+      my_list.append(run.update())
+      time_list.append(time.time()-time_start)
+      poseZ.append(run.zuav)
+
+    plt.figure()
+    plt.plot(time_list, my_list, "thrustsp")
+    plt.plot(time_list, poseZ, "poseZ")
+    plt.legend()
+    plt.show()
+    # return my_list, time_list   
+
 
 
 if __name__ == "__main__":
